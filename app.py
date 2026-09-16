@@ -48,25 +48,67 @@ def process_pdf(file_bytes, banner_bytes):
     doc.save(out_pdf)
     return out_pdf.getvalue()
 
+def process_pdf(file_bytes, banner_bytes):
+    doc = fitz.open(stream=file_bytes, filetype="pdf")
+    
+    for page in doc:
+        # Header scan area: top 85 points
+        header_rect = fitz.Rect(0, 0, page.rect.width, 85)
+        
+        # 1. Check for text inside the top zone
+        text_in_header = page.get_text("text", clip=header_rect).strip()
+        
+        # 2. Check for vector graphics or drawings
+        drawings_in_header = [d for d in page.get_drawings() if header_rect.intersects(d["rect"])]
+        
+        # 3. Check for embedded images located in the top zone
+        images_in_header = []
+        for img_info in page.get_images(full=True):
+            xref = img_info[0]
+            for img_rect in page.get_image_rects(xref):
+                if header_rect.intersects(img_rect):
+                    images_in_header.append(img_rect)
+        
+        # STRICT SKIP: If there is no text, drawing, or image at the top, leave page untouched
+        if not (text_in_header or drawings_in_header or images_in_header):
+            continue
+            
+        # Overwrite only when an existing header is detected
+        page.draw_rect(header_rect, color=None, fill=(1, 1, 1), overlay=True)
+        banner_rect = fitz.Rect(36, 12, page.rect.width - 36, 75)
+        page.insert_image(banner_rect, stream=banner_bytes, keep_proportion=True)
+        
+    out_pdf = io.BytesIO()
+    doc.save(out_pdf)
+    return out_pdf.getvalue()
+
+
 def process_docx(file_bytes, banner_bytes):
     doc = Document(io.BytesIO(file_bytes))
+    
     for section in doc.sections:
-        # Check if header contains text or tables
-        has_content = any(p.text.strip() for p in section.header.paragraphs) or len(section.header.tables) > 0
+        # Check text in header paragraphs
+        has_text = any(p.text.strip() for p in section.header.paragraphs)
+        # Check for tables inside the header
+        has_tables = len(section.header.tables) > 0
+        # Check for inline shapes/images (drawing tags in XML)
+        has_images = bool(section.header._element.xpath('.//a:blip') or section.header._element.xpath('.//w:drawing'))
         
-        if has_content:
-            # Clear existing paragraphs and tables in header
-            for p in section.header.paragraphs:
-                p.text = ""
-            for t in section.header.tables:
-                t._element.getparent().remove(t._element)
+        # STRICT SKIP: If there is no text, table, or drawing, skip section
+        if not (has_text or has_tables or has_images):
+            continue
             
-            # Add full-width banner image
-            header_p = section.header.paragraphs[0]
-            header_p.alignment = 1  # Centered
-            run = header_p.add_run()
-            # Set to 6.5 inches to fill standard A4/Letter margins neatly
-            run.add_picture(io.BytesIO(banner_bytes), width=Inches(6.5))
+        # Clear existing header content
+        for p in section.header.paragraphs:
+            p.text = ""
+        for t in section.header.tables:
+            t._element.getparent().remove(t._element)
+            
+        # Insert new banner
+        header_p = section.header.paragraphs[0]
+        header_p.alignment = 1  # Centered
+        run = header_p.add_run()
+        run.add_picture(io.BytesIO(banner_bytes), width=Inches(6.5))
 
     out_docx = io.BytesIO()
     doc.save(out_docx)
