@@ -1,12 +1,12 @@
 import streamlit as st
 import fitz  # PyMuPDF
-from PIL import Image
+from PIL import Image, ImageDraw
 import io
 import os
 from streamlit_drawable_canvas import st_canvas
 
 st.set_page_config(page_title="ABAS Dossier Compiler & Editor", layout="wide")
-st.title("Bulk Loading Dossier Compiler & Editor")
+st.title("Bulk Loading Dossier Compiler & Visual Editor")
 
 DEFAULT_HEADER_PATH = "header_banner.png"
 
@@ -16,23 +16,28 @@ if os.path.exists(DEFAULT_HEADER_PATH):
     with open(DEFAULT_HEADER_PATH, "rb") as f:
         default_header_bytes = f.read()
 
-# Initialize Session State for the compiled PDF
+# Initialize Session State
 if "pdf_bytes" not in st.session_state:
     st.session_state.pdf_bytes = None
 if "current_page" not in st.session_state:
     st.session_state.current_page = 0
 
-def stamp_header_banner(page, banner_bytes):
-    """Masks subcontractor header area and stamps ABAS banner."""
+def stamp_header_banner(page, banner_bytes, custom_rect=None):
+    """Masks header area and stamps ABAS banner using auto or custom coordinates."""
     p_w = page.rect.width
     p_h = page.rect.height
     is_landscape = p_w > p_h
-    header_height = p_h * 0.12 if is_landscape else p_h * 0.095
-    header_rect = fitz.Rect(0, 0, p_w, header_height)
+    
+    if custom_rect:
+        header_rect = custom_rect
+        banner_box = custom_rect
+    else:
+        header_height = p_h * 0.12 if is_landscape else p_h * 0.095
+        header_rect = fitz.Rect(0, 0, p_w, header_height)
+        margin_x = 40 if not is_landscape else 50
+        banner_box = fitz.Rect(margin_x, 12, p_w - margin_x, header_height - 6)
     
     page.draw_rect(header_rect, color=None, fill=(1, 1, 1), overlay=True)
-    margin_x = 40 if not is_landscape else 50
-    banner_box = fitz.Rect(margin_x, 12, p_w - margin_x, header_height - 6)
     page.insert_image(banner_box, stream=banner_bytes, keep_proportion=True)
 
 def process_master_doc(file_bytes):
@@ -106,11 +111,11 @@ with st.sidebar:
         if st.button("🚀 Compile Initial Dossier", type="primary", use_container_width=True):
             final_dossier = fitz.open()
             
-            # Step 1: Master
+            # Master
             m_doc = process_master_doc(master_file.read())
             final_dossier.insert_pdf(m_doc)
             
-            # Step 2: Cranes
+            # Cranes
             for fc in fc_files:
                 c_doc = process_fc_package(fc.read(), default_header_bytes)
                 final_dossier.insert_pdf(c_doc)
@@ -137,7 +142,7 @@ if st.session_state.pdf_bytes:
     doc = fitz.open(stream=st.session_state.pdf_bytes, filetype="pdf")
     total_pages = len(doc)
     
-    # Page Navigation Controls
+    # Page Navigation Bar
     col_nav1, col_nav2, col_nav3 = st.columns([1, 3, 1])
     with col_nav1:
         if st.button("◀ Previous Page") and st.session_state.current_page > 0:
@@ -159,61 +164,108 @@ if st.session_state.pdf_bytes:
 
     current_idx = st.session_state.current_page
     page = doc[current_idx]
+    p_w = int(page.rect.width)
+    p_h = int(page.rect.height)
+    is_landscape = p_w > p_h
     
-    # Render PDF page to PIL Image for the interactive canvas
-    pix = page.get_pixmap(dpi=150)
-    img_data = pix.tobytes("png")
-    page_image = Image.open(io.BytesIO(img_data))
+    st.subheader(f"Page {current_idx + 1} of {total_pages} ({'Landscape' if is_landscape else 'Portrait'} — {p_w}x{p_h} pt)")
     
-    # Editing Toolbar
-    st.subheader(f"Editing Page {current_idx + 1} of {total_pages}")
-    tb_col1, tb_col2, tb_col3 = st.columns([2, 2, 2])
-    
-    with tb_col1:
-        if st.button("🔄 Force Replace Header Banner", help="Whiteouts top region and stamps ABAS banner"):
-            stamp_header_banner(page, default_header_bytes)
-            out_buf = io.BytesIO()
-            doc.save(out_buf)
-            st.session_state.pdf_bytes = out_buf.getvalue()
-            st.success("Header replaced!")
-            st.rerun()
-            
-    with tb_col2:
-        stroke_width = st.slider("Eraser / Whiteout Brush Size", 5, 50, 15)
+    # ----------------- HEADER POSITION & SIZE CONTROLS -----------------
+    with st.expander("📐 Header Position & Resize Controls", expanded=True):
+        st.caption("Adjust the sliders below to move and scale the header placement box.")
+        c1, c2, c3, c4 = st.columns(4)
         
-    with tb_col3:
-        apply_erasure = st.button("💾 Apply Whiteout / Drawings", type="primary")
+        default_x = 40 if not is_landscape else 50
+        default_y = 10
+        default_w = p_w - (default_x * 2)
+        default_h = int(p_h * 0.08)
+        
+        with c1:
+            hdr_x = st.slider("X Position (Left Offset)", 0, p_w - 50, default_x, step=5)
+        with c2:
+            hdr_y = st.slider("Y Position (Top Offset)", 0, p_h - 30, default_y, step=5)
+        with c3:
+            hdr_w = st.slider("Width", 50, p_w - hdr_x, min(default_w, p_w - hdr_x), step=5)
+        with c4:
+            hdr_h = st.slider("Height", 15, int(p_h * 0.35), default_h, step=2)
 
-    # Interactive Drawable Canvas (Whiteout Tool)
-    st.caption("Use the brush below to paint white over unwanted text, timestamps, or phone scanner watermarks.")
+        ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1.5, 2, 2.5])
+        with ctrl_col1:
+            show_guide = st.checkbox("Show Placement Box", value=True)
+        with ctrl_col2:
+            if st.button("⚡ Apply Custom Placed Header", type="primary"):
+                custom_box = fitz.Rect(hdr_x, hdr_y, hdr_x + hdr_w, hdr_y + hdr_h)
+                stamp_header_banner(page, default_header_bytes, custom_rect=custom_box)
+                out_buf = io.BytesIO()
+                doc.save(out_buf)
+                st.session_state.pdf_bytes = out_buf.getvalue()
+                st.success("Custom header applied!")
+                st.rerun()
+        with ctrl_col3:
+            if st.button("🔄 Auto-Fit Default Header"):
+                stamp_header_banner(page, default_header_bytes)
+                out_buf = io.BytesIO()
+                doc.save(out_buf)
+                st.session_state.pdf_bytes = out_buf.getvalue()
+                st.success("Default auto header applied!")
+                st.rerun()
+
+    # Render PDF page to PIL Image
+    pix = page.get_pixmap(dpi=150)
+    page_image = Image.open(io.BytesIO(pix.tobytes("png")))
+    
+    # Draw interactive staging rectangle preview if enabled
+    preview_image = page_image.copy()
+    if show_guide:
+        draw = ImageDraw.Draw(preview_image)
+        scale_x = preview_image.width / p_w
+        scale_y = preview_image.height / p_h
+        
+        box_coords = [
+            hdr_x * scale_x,
+            hdr_y * scale_y,
+            (hdr_x + hdr_w) * scale_x,
+            (hdr_y + hdr_h) * scale_y
+        ]
+        # Red bounding guide with translucent indicator
+        draw.rectangle(box_coords, outline="red", width=3)
+        draw.text((box_coords[0] + 8, box_coords[1] + 8), "HEADER POSITION PREVIEW", fill="red")
+
+    # ----------------- WHITEOUT & DRAWING TOOLBAR -----------------
+    st.divider()
+    tb_col1, tb_col2 = st.columns([2, 1])
+    with tb_col1:
+        stroke_width = st.slider("Eraser / Whiteout Brush Size", 5, 50, 15)
+    with tb_col2:
+        apply_erasure = st.button("💾 Save Whiteout / Drawings", type="secondary")
+
+    st.caption("Paint directly over scanner artifacts or unwanted text to white them out.")
+    
+    canvas_w = 750
+    canvas_h = int(preview_image.height * (canvas_w / preview_image.width))
     
     canvas_result = st_canvas(
         fill_color="rgba(255, 255, 255, 1.0)",
         stroke_width=stroke_width,
-        stroke_color="#FFFFFF",  # Solid White
-        background_image=page_image,
+        stroke_color="#FFFFFF",
+        background_image=preview_image,
         update_streamlit=True,
-        height=int(page_image.height * (750 / page_image.width)),
-        width=750,
+        height=canvas_h,
+        width=canvas_w,
         drawing_mode="freedraw",
-        key=f"canvas_page_{current_idx}"
+        key=f"canvas_{current_idx}_{hdr_x}_{hdr_y}_{hdr_w}_{hdr_h}_{show_guide}"
     )
 
     # Save brush strokes directly back into the PDF page
     if apply_erasure and canvas_result.image_data is not None:
         mask = Image.fromarray(canvas_result.image_data.astype("uint8"), "RGBA")
-        
-        # Check if the user drew anything on the canvas
         if mask.getbbox():
-            # Composite the drawn strokes over the page image
-            base_rgb = page_image.resize((750, int(page_image.height * (750 / page_image.width))))
+            base_rgb = page_image.resize((canvas_w, canvas_h))
             base_rgb.paste(mask, (0, 0), mask)
             
-            # Reinsert modified image back into PDF page
             img_byte_arr = io.BytesIO()
             base_rgb.save(img_byte_arr, format="PNG")
             
-            # Clear existing page contents and draw the updated composite
             page.clean_contents()
             page.draw_rect(page.rect, color=None, fill=(1, 1, 1), overlay=True)
             page.insert_image(page.rect, stream=img_byte_arr.getvalue())
@@ -221,7 +273,7 @@ if st.session_state.pdf_bytes:
             out_buf = io.BytesIO()
             doc.save(out_buf)
             st.session_state.pdf_bytes = out_buf.getvalue()
-            st.success("Edits saved to document!")
+            st.success("Edits saved!")
             st.rerun()
 
 else:
