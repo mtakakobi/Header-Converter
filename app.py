@@ -7,7 +7,7 @@ from streamlit_drawable_canvas import st_canvas
 
 st.set_page_config(page_title="ABAS Dossier Compiler & Visual Editor", layout="wide")
 
-# Custom CSS for the sticky navigation bar
+# Custom CSS for sticky navigation bar
 st.markdown("""
 <style>
     .sticky-nav {
@@ -169,7 +169,7 @@ if st.session_state.pdf_bytes:
     if st.session_state.current_page >= total_pages:
         st.session_state.current_page = max(0, total_pages - 1)
 
-    # ----------------- STICKY NAVIGATION BAR -----------------
+    # ----------------- FLUID STICKY NAVIGATION BAR -----------------
     st.markdown('<div class="sticky-nav">', unsafe_allow_html=True)
     nav_c1, nav_c2, nav_c3, nav_c4, nav_c5, nav_c6 = st.columns([1.2, 2.2, 1.2, 1.4, 1.4, 1.4])
     
@@ -305,19 +305,19 @@ if st.session_state.pdf_bytes:
         draw.rectangle(box_coords, outline="red", width=3)
         draw.text((box_coords[0] + 8, box_coords[1] + 8), "HEADER POSITION PREVIEW", fill="red")
 
-    # ----------------- DIRECT VECTOR WHITEOUT TOOLBAR -----------------
+    # ----------------- RELIABLE WHITEOUT / ERASER TOOLBAR -----------------
     st.divider()
     st.markdown("#### 🧹 Direct PDF Eraser / Whiteout")
     
     e_col1, e_col2, e_col3 = st.columns([1, 1, 2])
     with e_col1:
-        eraser_mode = st.selectbox("Tool Mode", ["Drag Box Area (Rectangle)", "Freehand Brush"])
+        eraser_mode = st.selectbox("Tool Mode", ["Freehand Brush", "Drag Box Area (Rectangle)"])
     with e_col2:
         stroke_width = st.slider("Eraser Size", 8, 80, 25)
     with e_col3:
         apply_erasure = st.button("💾 Apply Whiteout Directly to PDF", type="primary", use_container_width=True)
 
-    st.caption("Draw a whiteout box or strokes over unwanted text/watermarks, then click **Apply Whiteout Directly to PDF**.")
+    st.caption("Paint or drag a white box over unwanted text/watermarks, then click **Apply Whiteout Directly to PDF**.")
 
     canvas_w = 750
     canvas_h = int(preview_image.height * (canvas_w / preview_image.width))
@@ -335,42 +335,34 @@ if st.session_state.pdf_bytes:
         key=f"eraser_canvas_{current_idx}_{drawing_mode}_{stroke_width}_{hdr_x}_{hdr_y}_{hdr_w}_{hdr_h}_{show_guide}"
     )
 
-    # DIRECT VECTOR WRITE TO PDF
-    if apply_erasure and canvas_result.json_data is not None:
-        objects = canvas_result.json_data.get("objects", [])
+    # UNIFIED VECTOR-LAYER WHITEOUT COMMIT (Both Freehand & Drag Box)
+    if apply_erasure and canvas_result.image_data is not None:
+        raw_rgba = canvas_result.image_data.astype("uint8")
+        mask_layer = Image.fromarray(raw_rgba, "RGBA")
         
-        if objects:
-            scale_x = p_w / canvas_w
-            scale_y = p_h / canvas_h
+        # Check user drawing presence via alpha channel
+        alpha_channel = mask_layer.split()[3]
+        bbox = alpha_channel.getbbox()
+        
+        if bbox:
+            # Create a clean, pure white patch matching the exact canvas bounds
+            white_patch = Image.new("RGBA", mask_layer.size, (255, 255, 255, 255))
+            stamped_mask = Image.composite(white_patch, Image.new("RGBA", mask_layer.size, (255, 255, 255, 0)), alpha_channel)
             
-            for obj in objects:
-                if obj["type"] == "rect":
-                    rx = obj["left"] * scale_x
-                    ry = obj["top"] * scale_y
-                    rw = obj["width"] * scale_x
-                    rh = obj["height"] * scale_y
-                    
-                    target_rect = fitz.Rect(rx, ry, rx + rw, ry + rh)
-                    page.draw_rect(target_rect, color=None, fill=(1, 1, 1), overlay=True)
-
-                elif obj["type"] == "path":
-                    path_data = obj.get("path", [])
-                    brush_width = (obj.get("strokeWidth", stroke_width) / 2) * scale_x
-                    
-                    for pt in path_data:
-                        if len(pt) >= 3 and isinstance(pt[1], (int, float)) and isinstance(pt[2], (int, float)):
-                            px = pt[1] * scale_x
-                            py = pt[2] * scale_y
-                            pt_rect = fitz.Rect(px - brush_width, py - brush_width, px + brush_width, py + brush_width)
-                            page.draw_rect(pt_rect, color=None, fill=(1, 1, 1), overlay=True)
-
+            # Save stroke overlay to buffer
+            mask_buffer = io.BytesIO()
+            stamped_mask.save(mask_buffer, format="PNG")
+            
+            # Stamp overlay directly onto PDF page rect without rasterizing document text
+            page.insert_image(page.rect, stream=mask_buffer.getvalue(), overlay=True)
+            
             out_buf = io.BytesIO()
             doc.save(out_buf)
             st.session_state.pdf_bytes = out_buf.getvalue()
-            st.success("Whiteout applied successfully to the PDF!")
+            st.toast("Whiteout applied successfully!")
             st.rerun()
         else:
-            st.warning("No whiteout areas drawn yet. Draw on the page first!")
+            st.warning("No whiteout marks detected. Draw or drag a box on the page first!")
 
 else:
     st.info("👈 Upload your Master Vessel document and Floating Crane packages in the sidebar to begin.")
