@@ -5,7 +5,31 @@ import io
 import os
 from streamlit_drawable_canvas import st_canvas
 
-st.set_page_config(page_title="ABAS Dossier Compiler & Editor", layout="wide")
+st.set_page_config(page_title="ABAS Dossier Compiler & Visual Editor", layout="wide")
+
+# Custom CSS to keep the Navigation & Action toolbar sticky at the top
+st.markdown("""
+<style>
+    .sticky-nav {
+        position: -webkit-sticky;
+        position: sticky;
+        top: 2.875rem;
+        background-color: rgba(255, 255, 255, 0.96);
+        padding: 10px 15px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        z-index: 999;
+        margin-bottom: 1rem;
+    }
+    @media (prefers-color-scheme: dark) {
+        .sticky-nav {
+            background-color: rgba(14, 17, 23, 0.96);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("Bulk Loading Dossier Compiler & Visual Editor")
 
 DEFAULT_HEADER_PATH = "header_banner.png"
@@ -142,25 +166,81 @@ if st.session_state.pdf_bytes:
     doc = fitz.open(stream=st.session_state.pdf_bytes, filetype="pdf")
     total_pages = len(doc)
     
-    # Page Navigation Bar
-    col_nav1, col_nav2, col_nav3 = st.columns([1, 3, 1])
-    with col_nav1:
-        if st.button("◀ Previous Page") and st.session_state.current_page > 0:
+    # Boundary check
+    if st.session_state.current_page >= total_pages:
+        st.session_state.current_page = max(0, total_pages - 1)
+
+    # ----------------- FLUID STICKY NAVIGATION BAR -----------------
+    st.markdown('<div class="sticky-nav">', unsafe_allow_html=True)
+    nav_c1, nav_c2, nav_c3, nav_c4, nav_c5, nav_c6 = st.columns([1.2, 2.2, 1.2, 1.4, 1.4, 1.4])
+    
+    with nav_c1:
+        if st.button("◀ Previous", use_container_width=True, disabled=(st.session_state.current_page <= 0)):
             st.session_state.current_page -= 1
             st.rerun()
-    with col_nav2:
+            
+    with nav_c2:
         selected_p = st.selectbox(
-            "Go to Page", 
+            "Page", 
             options=range(1, total_pages + 1), 
-            index=st.session_state.current_page
+            index=st.session_state.current_page,
+            format_func=lambda x: f"Page {x} of {total_pages}",
+            label_visibility="collapsed"
         )
         if selected_p - 1 != st.session_state.current_page:
             st.session_state.current_page = selected_p - 1
             st.rerun()
-    with col_nav3:
-        if st.button("Next Page ▶") and st.session_state.current_page < total_pages - 1:
+            
+    with nav_c3:
+        if st.button("Next ▶", use_container_width=True, disabled=(st.session_state.current_page >= total_pages - 1)):
             st.session_state.current_page += 1
             st.rerun()
+            
+    with nav_c4:
+        # Move earlier
+        if st.button("⬅ Move Back", use_container_width=True, disabled=(st.session_state.current_page <= 0)):
+            curr = st.session_state.current_page
+            new_doc = fitz.open()
+            # Construct reordered list
+            order = list(range(total_pages))
+            order[curr - 1], order[curr] = order[curr], order[curr - 1]
+            for idx in order:
+                new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
+            out_buf = io.BytesIO()
+            new_doc.save(out_buf)
+            st.session_state.pdf_bytes = out_buf.getvalue()
+            st.session_state.current_page -= 1
+            st.rerun()
+
+    with nav_c5:
+        # Move forward
+        if st.button("Move Fwd ➡", use_container_width=True, disabled=(st.session_state.current_page >= total_pages - 1)):
+            curr = st.session_state.current_page
+            new_doc = fitz.open()
+            order = list(range(total_pages))
+            order[curr + 1], order[curr] = order[curr], order[curr + 1]
+            for idx in order:
+                new_doc.insert_pdf(doc, from_page=idx, to_page=idx)
+            out_buf = io.BytesIO()
+            new_doc.save(out_buf)
+            st.session_state.pdf_bytes = out_buf.getvalue()
+            st.session_state.current_page += 1
+            st.rerun()
+
+    with nav_c6:
+        # Delete current page
+        if st.button("🗑 Delete Page", type="primary", use_container_width=True, disabled=(total_pages <= 1)):
+            curr = st.session_state.current_page
+            doc.delete_page(curr)
+            out_buf = io.BytesIO()
+            doc.save(out_buf)
+            st.session_state.pdf_bytes = out_buf.getvalue()
+            st.session_state.current_page = max(0, curr - 1)
+            st.toast("Page deleted successfully!")
+            st.rerun()
+
+    st.markdown('</div>', unsafe_allow_html=True)
+    # ----------------- END STICKY NAVIGATION BAR -----------------
 
     current_idx = st.session_state.current_page
     page = doc[current_idx]
@@ -168,11 +248,11 @@ if st.session_state.pdf_bytes:
     p_h = int(page.rect.height)
     is_landscape = p_w > p_h
     
-    st.subheader(f"Page {current_idx + 1} of {total_pages} ({'Landscape' if is_landscape else 'Portrait'} — {p_w}x{p_h} pt)")
-    
+    st.info(f"Viewing **Page {current_idx + 1}** — {'Landscape' if is_landscape else 'Portrait'} layout ({p_w} × {p_h} points)")
+
     # ----------------- HEADER POSITION & SIZE CONTROLS -----------------
-    with st.expander("📐 Header Position & Resize Controls", expanded=True):
-        st.caption("Adjust the sliders below to move and scale the header placement box.")
+    with st.expander("📐 Header Position & Resize Controls", expanded=False):
+        st.caption("Adjust sliders to move or rescale the header banner placement.")
         c1, c2, c3, c4 = st.columns(4)
         
         default_x = 40 if not is_landscape else 50
@@ -191,7 +271,7 @@ if st.session_state.pdf_bytes:
 
         ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1.5, 2, 2.5])
         with ctrl_col1:
-            show_guide = st.checkbox("Show Placement Box", value=True)
+            show_guide = st.checkbox("Show Placement Box", value=False)
         with ctrl_col2:
             if st.button("⚡ Apply Custom Placed Header", type="primary"):
                 custom_box = fitz.Rect(hdr_x, hdr_y, hdr_x + hdr_w, hdr_y + hdr_h)
@@ -202,12 +282,12 @@ if st.session_state.pdf_bytes:
                 st.success("Custom header applied!")
                 st.rerun()
         with ctrl_col3:
-            if st.button("🔄 Auto-Fit Default Header"):
+            if st.button("🔄 Auto-Fit Standard Header"):
                 stamp_header_banner(page, default_header_bytes)
                 out_buf = io.BytesIO()
                 doc.save(out_buf)
                 st.session_state.pdf_bytes = out_buf.getvalue()
-                st.success("Default auto header applied!")
+                st.success("Default header applied!")
                 st.rerun()
 
     # Render PDF page to PIL Image
@@ -227,7 +307,6 @@ if st.session_state.pdf_bytes:
             (hdr_x + hdr_w) * scale_x,
             (hdr_y + hdr_h) * scale_y
         ]
-        # Red bounding guide with translucent indicator
         draw.rectangle(box_coords, outline="red", width=3)
         draw.text((box_coords[0] + 8, box_coords[1] + 8), "HEADER POSITION PREVIEW", fill="red")
 
@@ -235,11 +314,11 @@ if st.session_state.pdf_bytes:
     st.divider()
     tb_col1, tb_col2 = st.columns([2, 1])
     with tb_col1:
-        stroke_width = st.slider("Eraser / Whiteout Brush Size", 5, 50, 15)
+        stroke_width = st.slider("Eraser / Whiteout Brush Size", 5, 50, 18)
     with tb_col2:
         apply_erasure = st.button("💾 Save Whiteout / Drawings", type="secondary")
 
-    st.caption("Paint directly over scanner artifacts or unwanted text to white them out.")
+    st.caption("Paint directly over scanner artifacts, watermarks, or unwanted text to white them out.")
     
     canvas_w = 750
     canvas_h = int(preview_image.height * (canvas_w / preview_image.width))
